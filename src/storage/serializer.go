@@ -37,7 +37,7 @@ func SerializeSchema(schema *Schema) []byte {
 		binary.LittleEndian.PutUint16(buf[offset:], uint16(col.Length))
 		offset += 2
 
-		if col.IsIndexed {
+		if col.IsIndexed && col.Type == TypeInt {
 			buf[offset] = 1
 		} else {
 			buf[offset] = 0

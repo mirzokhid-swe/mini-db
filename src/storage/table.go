@@ -164,6 +164,14 @@ func (tm *TableManager) CreateTable(name string, schema *Schema) error {
 		return err
 	}
 
+	for _, col := range schema.Columns {
+		if col.Type == TypeInt && col.IsIndexed {
+			if err := tm.CreateIndex(name, col.Name); err != nil {
+				return fmt.Errorf("failed to create index for column %s: %w", col.Name, err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -195,7 +203,7 @@ func (tm *TableManager) Insert(tableName string, record Record) error {
 
 	serialized_record := SerializeRecord(schema, record)
 
-	page, page_order, err := tm.FindOrCreatePage(tableName, serialized_record)
+	page, page_order, record_id, err := tm.FindOrCreatePage(tableName, serialized_record)
 
 	if err != nil {
 		fmt.Println("page finding section:")
@@ -209,6 +217,29 @@ func (tm *TableManager) Insert(tableName string, record Record) error {
 		fmt.Println("page section")
 		fmt.Println(err.Error())
 		return err
+	}
+
+	for i, col := range schema.Columns {
+		if col.IsIndexed && col.Type == TypeInt {
+			value, ok := record.Items[i].Literal.(int)
+			if !ok {
+				value64, ok := record.Items[i].Literal.(int64)
+				if !ok {
+					continue
+				}
+				value = int(value64)
+			}
+
+			location := RecordLocation{
+				PageID:   int64(page_order),
+				RecordID: record_id,
+			}
+
+			indexName := tableName + "_" + col.Name + ".index"
+			if err := tm.InsetValueToIndex(indexName, int64(value), location); err != nil {
+				return fmt.Errorf("failed to update index for column %s: %w", col.Name, err)
+			}
+		}
 	}
 
 	return nil
@@ -275,28 +306,28 @@ func (tm *TableManager) GetAllData(tableName string, filters []Filter, selectedC
 
 }
 
-func (tm *TableManager) FindOrCreatePage(tableName string, record []byte) (page []byte, page_order int, err error) {
+func (tm *TableManager) FindOrCreatePage(tableName string, record []byte) (page []byte, page_order int, record_id int16, err error) {
 	record_size := uint16(len(record))
 	fsm_size, err := tm.FileManager.GetFileSize(tableName + ".fsm")
 
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 
 	fsm_binary_data, err := tm.FileManager.Read(tableName+".fsm", 0, fsm_size)
 
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 
 	pages_count := int(len(fsm_binary_data) / 2)
 	table_size, err := tm.FileManager.GetFileSize(tableName + ".table")
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	table_pages := int(table_size / PageSize)
 	if table_pages != pages_count {
-		return nil, 0, errors.New("fsm data is not compatible with table")
+		return nil, 0, 0, errors.New("fsm data is not compatible with table")
 	}
 
 	fsm_data := DeserializeFSM(fsm_binary_data)
@@ -310,15 +341,18 @@ func (tm *TableManager) FindOrCreatePage(tableName string, record []byte) (page 
 		offset := int64((i - 1) * PageSize)
 		page, err = tm.FileManager.Read(tableName+".table", offset, int64(PageSize))
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 
 		record_count := uint16(binary.LittleEndian.Uint16(page[:2]))
 		free_space_pointer := uint16(binary.LittleEndian.Uint16(page[2:4]))
+		// Calculate actual free space: (record_count + 1) * 4 is used because
+		// each record needs 4 bytes for metadata (2 bytes for offset, 2 bytes for length)
+		// and +1 accounts for the metadata of the new record being inserted
 		actual_free := PageSize - ((int(record_count)+1)*4 + int(free_space_pointer))
 
 		if actual_free != fsm_free {
-			return nil, 0, errors.New("fsm and page free space mismatch")
+			return nil, 0, 0, errors.New("fsm and page free space mismatch")
 		}
 
 		slot_beginning_address := (PageSize - int(record_count)*4) - 4
@@ -338,11 +372,11 @@ func (tm *TableManager) FindOrCreatePage(tableName string, record []byte) (page 
 		buf := make([]byte, 2)
 		binary.LittleEndian.PutUint16(buf, uint16(new_free))
 		if err := tm.FileManager.Write(tableName+".fsm", int64((i-1)*2), buf); err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 
 		page_order = i
-		return page, page_order, nil
+		return page, page_order, int16(record_count), nil
 	}
 
 	page = make([]byte, PageSize)
@@ -356,10 +390,12 @@ func (tm *TableManager) FindOrCreatePage(tableName string, record []byte) (page 
 	buf := make([]byte, 2)
 	binary.LittleEndian.PutUint16(buf, uint16(remaining_free))
 	if err := tm.FileManager.Write(tableName+".fsm", int64(len(fsm_binary_data)), buf); err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 
-	return page, pages_count + 1, nil
+	// Return pages_count + 1 because we obtained the current page count above
+	// and we just added a new page to the table
+	return page, pages_count + 1, 1, nil
 }
 
 func BuildColumnProjection(schema Schema, filters []Filter, selectedColumns SelectedColumns) map[int]ColumnProjection {
