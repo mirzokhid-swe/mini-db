@@ -51,6 +51,7 @@ type Filter struct {
 	Operator    string
 	Value       interface{}
 	ColumnIndex int
+	UseIndex    bool
 }
 
 type SelectedColumns struct {
@@ -58,13 +59,14 @@ type SelectedColumns struct {
 }
 
 type ColumnProjection struct {
-	Name           string
-	Index          int
-	IsFiltered     bool
-	IsProjected    bool
-	MustExtract    bool
-	FilterValue    any
-	FilterOperator string
+	Name            string
+	Index           int
+	IsFiltered      bool
+	IsProjected     bool
+	MustExtract     bool
+	FilterValue     any
+	FilterOperator  string
+	IsIndexedColumn bool
 }
 
 type Item struct {
@@ -80,6 +82,7 @@ type TableI interface {
 	Insert(tableName string, record Record) error
 	GetAllData(tableName string, filters []Filter, selectedColumns SelectedColumns) ([]map[string]any, error)
 	GetTableSchema(schemaName string) (Schema, error)
+	GetDataByLocation(tableName string, schema Schema, locations []RecordLocation, columnProjection map[int]ColumnProjection) []map[string]any
 
 	CreateIndex(tableName string, columnName string) error
 	GetIndexHeader(fileName string) (IndexHeader, error)
@@ -92,6 +95,10 @@ type TableI interface {
 	GetRecordListFileHeader(fileName string) (RecordListFileHeader, error)
 	AddValueToRecordListFile(fileName string, recordListHead int64, location RecordLocation) (int64, error)
 	GetRecordsByValue(fileName string, recordListHead int64) ([]RecordLocation, error)
+
+	CanUseIndexForFilters(tableName string, schema Schema, filters []Filter) (bool, []Filter)
+	GetRecordLocationsFromIndex(tableName string, filter Filter) ([]RecordLocation, error)
+	IntersectRecordLocations(locationSets [][]RecordLocation) []RecordLocation
 }
 
 const PageSize = 8192
@@ -251,6 +258,21 @@ func (tm *TableManager) GetAllData(tableName string, filters []Filter, selectedC
 		return nil, err
 	}
 
+	columnProjection := BuildColumnProjection(schema, filters, selectedColumns)
+
+	canUseIndex, indexFilters := tm.CanUseIndexForFilters(tableName, schema, filters)
+
+	if canUseIndex {
+
+		locations, err := tm.getRecordLocationsFromIndexedFilters(tableName, indexFilters)
+
+		if err != nil {
+			panic(err)
+		}
+
+		return tm.GetDataByLocation(tableName, schema, locations, columnProjection), nil
+	}
+
 	data := make([]map[string]any, 0)
 
 	fsm_size, err := tm.FileManager.GetFileSize(tableName + ".fsm")
@@ -284,7 +306,6 @@ func (tm *TableManager) GetAllData(tableName string, filters []Filter, selectedC
 			record_offset := uint16(binary.LittleEndian.Uint16(page[offset-2 : offset]))
 			offset -= 2
 			record_length := uint16(binary.LittleEndian.Uint16(page[offset-2 : offset]))
-			columnProjection := BuildColumnProjection(schema, filters, selectedColumns)
 			rec := DeserializeRecord(schema, page[record_offset:record_offset+record_length], columnProjection)
 			if rec != nil {
 				row := make(map[string]any)
@@ -304,6 +325,41 @@ func (tm *TableManager) GetAllData(tableName string, filters []Filter, selectedC
 
 	return data, nil
 
+}
+
+func (tm *TableManager) GetDataByLocation(tableName string, schema Schema, locations []RecordLocation, columnProjection map[int]ColumnProjection) []map[string]any {
+	data := make([]map[string]any, 0)
+
+	for _, location := range locations {
+		offset := int64((location.PageID - 1) * PageSize)
+		page, err := tm.FileManager.Read(tableName+".table", offset, int64(PageSize))
+
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+
+		slotOffset := PageSize - 4*int(location.RecordID)
+
+		recordLength := binary.LittleEndian.Uint16(page[slotOffset : slotOffset+2])
+		recordBeginningAddress := binary.LittleEndian.Uint16(page[slotOffset+2 : slotOffset+4])
+
+		record := DeserializeRecord(schema, page[recordBeginningAddress:recordBeginningAddress+recordLength], columnProjection)
+
+		if record != nil {
+			row := make(map[string]any)
+			itemIndex := 0
+			for colIndex := 0; colIndex < len(schema.Columns); colIndex++ {
+				if columnProjection[colIndex].IsProjected {
+					row[columnProjection[colIndex].Name] = record.Items[itemIndex].Literal
+					itemIndex++
+				}
+			}
+			data = append(data, row)
+		}
+	}
+
+	return data
 }
 
 func (tm *TableManager) FindOrCreatePage(tableName string, record []byte) (page []byte, page_order int, record_id int16, err error) {
@@ -380,11 +436,11 @@ func (tm *TableManager) FindOrCreatePage(tableName string, record []byte) (page 
 	}
 
 	page = make([]byte, PageSize)
-	binary.LittleEndian.PutUint16(page[:2], uint16(1))
-	binary.LittleEndian.PutUint16(page[2:4], uint16(4+len(record)))
+	binary.LittleEndian.PutUint16(page[:2], uint16(1))              // record count
+	binary.LittleEndian.PutUint16(page[2:4], uint16(4+len(record))) // free space pointer
 	copy(page[4:], record)
-	binary.LittleEndian.PutUint16(page[PageSize-4:PageSize-2], uint16(len(record)))
-	binary.LittleEndian.PutUint16(page[PageSize-2:PageSize], uint16(4))
+	binary.LittleEndian.PutUint16(page[PageSize-4:PageSize-2], uint16(len(record))) // record length
+	binary.LittleEndian.PutUint16(page[PageSize-2:PageSize], uint16(4))             // record beginning address
 
 	remaining_free := PageSize - (12 + len(record))
 	buf := make([]byte, 2)
@@ -401,10 +457,12 @@ func (tm *TableManager) FindOrCreatePage(tableName string, record []byte) (page 
 func BuildColumnProjection(schema Schema, filters []Filter, selectedColumns SelectedColumns) map[int]ColumnProjection {
 	filteredCols := make(map[string]bool)
 	filterValues := make(map[string]any)
+	filteringIndexedColumns := make(map[string]any)
 	filterOperator := make(map[string]string)
 	for _, filter := range filters {
 		filteredCols[filter.Column] = true
 		filterValues[filter.Column] = filter.Value
+		filteringIndexedColumns[filter.Column] = filter.UseIndex
 		filterOperator[filter.Column] = filter.Operator
 	}
 
@@ -430,4 +488,112 @@ func BuildColumnProjection(schema Schema, filters []Filter, selectedColumns Sele
 	}
 
 	return projection
+}
+
+func (tm *TableManager) CanUseIndexForFilters(tableName string, schema Schema, filters []Filter) (bool, []Filter) {
+	hasIndexedFilter := false
+
+	for i := range filters {
+		filter := &filters[i]
+		if filter.Operator == "=" {
+			for _, col := range schema.Columns {
+				if col.Name == filter.Column && col.IsIndexed && col.Type == TypeInt {
+					indexName := tableName + "_" + col.Name + ".index"
+					if tm.FileManager.FileExists(indexName) {
+						filter.UseIndex = true
+						hasIndexedFilter = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return hasIndexedFilter, filters
+}
+
+func (tm *TableManager) GetRecordLocationsFromIndex(tableName string, filter Filter) ([]RecordLocation, error) {
+	value, ok := filter.Value.(int)
+	if !ok {
+		value64, ok := filter.Value.(int64)
+		if !ok {
+			return nil, fmt.Errorf("unsupported value type for index: %T", filter.Value)
+		}
+		value = int(value64)
+	}
+
+	indexName := tableName + "_" + filter.Column + ".index"
+	recordListHead, found, err := tm.SearchValue(indexName, int64(value))
+	if err != nil {
+		return nil, fmt.Errorf("index search failed: %w", err)
+	}
+
+	if !found {
+		return []RecordLocation{}, nil
+	}
+
+	recordListFileName := tableName + "_" + filter.Column + ".record_list_file"
+	locations, err := tm.GetRecordsByValue(recordListFileName, recordListHead)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get record locations: %w", err)
+	}
+
+	return locations, nil
+}
+
+func (tm *TableManager) IntersectRecordLocations(locationSets [][]RecordLocation) []RecordLocation {
+	if len(locationSets) == 0 {
+		return []RecordLocation{}
+	}
+
+	if len(locationSets) == 1 {
+		return locationSets[0]
+	}
+
+	locationCount := make(map[string]int)
+	locationMap := make(map[string]RecordLocation)
+
+	for _, locations := range locationSets {
+		seen := make(map[string]bool)
+		for _, loc := range locations {
+			key := fmt.Sprintf("%d-%d", loc.PageID, loc.RecordID)
+			if !seen[key] {
+				locationCount[key]++
+				locationMap[key] = loc
+				seen[key] = true
+			}
+		}
+	}
+
+	result := []RecordLocation{}
+	requiredCount := len(locationSets)
+	for key, count := range locationCount {
+		if count == requiredCount {
+			result = append(result, locationMap[key])
+		}
+	}
+
+	return result
+}
+
+func (tm *TableManager) getRecordLocationsFromIndexedFilters(tableName string, filters []Filter) ([]RecordLocation, error) {
+	var locationSets [][]RecordLocation
+
+	for _, filter := range filters {
+		if filter.UseIndex {
+			locations, err := tm.GetRecordLocationsFromIndex(tableName, filter)
+			if err != nil {
+				return nil, err
+			}
+			locationSets = append(locationSets, locations)
+		}
+	}
+
+	if len(locationSets) == 0 {
+		return []RecordLocation{}, nil
+	}
+
+	combinedLocations := tm.IntersectRecordLocations(locationSets)
+
+	return combinedLocations, nil
 }
