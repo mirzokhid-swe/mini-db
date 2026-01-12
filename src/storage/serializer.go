@@ -85,6 +85,12 @@ func SerializeRecord(schema Schema, record Record) []byte {
 	column_count := len(schema.Columns)
 	var buf bytes.Buffer
 
+	if record.IsDeleted {
+		buf.WriteByte(1)
+	} else {
+		buf.WriteByte(0)
+	}
+
 	for i := 0; i < column_count; i++ {
 		switch schema.Columns[i].Type {
 		case TypeInt: // integer
@@ -149,6 +155,12 @@ func SerializeRecord(schema Schema, record Record) []byte {
 // TODO: Extract filtering logic into a separate method
 func DeserializeRecord(schema Schema, data []byte, columnProjection map[int]ColumnProjection) *Record {
 	offset := 0
+
+	if data[offset] == 1 {
+		return nil
+	}
+	offset++
+
 	items := make([]Item, 0, len(schema.Columns))
 
 	for i := 0; i < len(schema.Columns); i++ {

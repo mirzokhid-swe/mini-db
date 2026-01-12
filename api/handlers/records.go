@@ -134,3 +134,43 @@ func (h *Handler) GetAllRecords(c *gin.Context) {
 
 	h.handleResponse(c, http.OK, data)
 }
+
+func (h *Handler) DeleteRecords(c *gin.Context) {
+	var req models.DeleteRecordsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.handleResponse(c, http.BadRequest, err.Error())
+		return
+	}
+
+	schema, err := h.Stg.Table().GetTableSchema(req.Name + ".schema")
+	if err != nil {
+		h.handleResponse(c, http.NOT_FOUND, err.Error())
+		return
+	}
+
+	filters := make([]storage.Filter, 0, len(req.Filter))
+	for _, f := range req.Filter {
+		filters = append(filters, storage.Filter{
+			Column:   f.Column,
+			Operator: f.Operator,
+			Value:    f.Value,
+		})
+	}
+
+	filters, err = utils.SetFilterColumnIndexes(schema, filters)
+	if err != nil {
+		h.handleResponse(c, http.InvalidArgument, err.Error())
+		return
+	}
+
+	deletedCount, err := h.Stg.Table().Delete(req.Name, filters)
+	if err != nil {
+		h.handleResponse(c, http.InternalServerError, err.Error())
+		return
+	}
+
+	h.handleResponse(c, http.OK, gin.H{
+		"deleted_count": deletedCount,
+		"message":       "Records deleted successfully",
+	})
+}

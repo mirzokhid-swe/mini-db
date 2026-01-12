@@ -16,3 +16,8 @@ type FilterRequestItem struct {
 	Operator string `json:"operator" binding:"required"`
 	Value    any    `json:"value" binding:"required"`
 }
+
+type DeleteRecordsRequest struct {
+	Name   string              `json:"name" binding:"required"`
+	Filter []FilterRequestItem `json:"filter"`
+}

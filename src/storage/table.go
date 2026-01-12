@@ -42,7 +42,8 @@ type Schema struct {
 }
 
 type Record struct {
-	Items []Item
+	Items     []Item
+	IsDeleted bool
 }
 
 // filter
@@ -80,6 +81,7 @@ type TableManager struct {
 type TableI interface {
 	CreateTable(name string, schema *Schema) error
 	Insert(tableName string, record Record) error
+	Delete(tableName string, filters []Filter) (int, error)
 	GetAllData(tableName string, filters []Filter, selectedColumns SelectedColumns) ([]map[string]any, error)
 	GetTableSchema(schemaName string) (Schema, error)
 	GetDataByLocation(tableName string, schema Schema, locations []RecordLocation, columnProjection map[int]ColumnProjection) []map[string]any
@@ -203,7 +205,6 @@ func (tm *TableManager) Insert(tableName string, record Record) error {
 	schema, err := tm.GetTableSchema(tableName + ".schema")
 
 	if err != nil {
-		fmt.Println("schema")
 		fmt.Println(err.Error())
 		return err
 	}
@@ -213,7 +214,6 @@ func (tm *TableManager) Insert(tableName string, record Record) error {
 	page, page_order, record_id, err := tm.FindOrCreatePage(tableName, serialized_record)
 
 	if err != nil {
-		fmt.Println("page finding section:")
 		fmt.Println(err.Error())
 		return err
 	}
@@ -221,7 +221,6 @@ func (tm *TableManager) Insert(tableName string, record Record) error {
 	err = tm.FileManager.Write(tableName+".table", (int64(page_order)-1)*8192, page)
 
 	if err != nil {
-		fmt.Println("page section")
 		fmt.Println(err.Error())
 		return err
 	}
@@ -598,4 +597,122 @@ func (tm *TableManager) getRecordLocationsFromIndexedFilters(tableName string, f
 	combinedLocations := tm.IntersectRecordLocations(locationSets)
 
 	return combinedLocations, nil
+}
+
+func (tm *TableManager) Delete(tableName string, filters []Filter) (int, error) {
+	schema, err := tm.GetTableSchema(tableName + ".schema")
+	if err != nil {
+		return 0, err
+	}
+
+	canUseIndex, indexFilters := tm.CanUseIndexForFilters(tableName, schema, filters)
+
+	var locationsToDelete []RecordLocation
+
+	if canUseIndex {
+		locations, err := tm.getRecordLocationsFromIndexedFilters(tableName, indexFilters)
+		if err != nil {
+			return 0, err
+		}
+		locationsToDelete = locations
+	} else {
+		locations, err := tm.findRecordLocationsByFullScan(tableName, schema, filters)
+		if err != nil {
+			return 0, err
+		}
+		locationsToDelete = locations
+	}
+
+	deletedCount := 0
+	for _, location := range locationsToDelete {
+		err := tm.markRecordAsDeleted(tableName, location)
+		if err != nil {
+			fmt.Printf("Error marking record as deleted at PageID=%d, RecordID=%d: %v\n", location.PageID, location.RecordID, err)
+			continue
+		}
+		deletedCount++
+	}
+
+	return deletedCount, nil
+}
+
+func (tm *TableManager) markRecordAsDeleted(tableName string, location RecordLocation) error {
+	offset := int64((location.PageID - 1) * PageSize)
+	page, err := tm.FileManager.Read(tableName+".table", offset, int64(PageSize))
+	if err != nil {
+		return err
+	}
+
+	slotOffset := PageSize - 4*int(location.RecordID)
+	recordBeginningAddress := binary.LittleEndian.Uint16(page[slotOffset+2 : slotOffset+4])
+
+	page[recordBeginningAddress] = 1
+
+	err = tm.FileManager.Write(tableName+".table", offset, page)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (tm *TableManager) findRecordLocationsByFullScan(tableName string, schema Schema, filters []Filter) ([]RecordLocation, error) {
+	var locations []RecordLocation
+
+	allColumns := make([]string, 0, len(schema.Columns))
+	for _, col := range schema.Columns {
+		allColumns = append(allColumns, col.Name)
+	}
+	selectedColumns := SelectedColumns{Columns: allColumns}
+	columnProjection := BuildColumnProjection(schema, filters, selectedColumns)
+
+	fsm_size, err := tm.FileManager.GetFileSize(tableName + ".fsm")
+	if err != nil {
+		return nil, err
+	}
+	fsm_binary_data, err := tm.FileManager.Read(tableName+".fsm", 0, fsm_size)
+	if err != nil {
+		return nil, err
+	}
+	fsm_data := DeserializeFSM(fsm_binary_data)
+	pages_count := len(fsm_data)
+
+	empty_free := PageSize - 8
+
+	for pageNum := 1; pageNum <= pages_count; pageNum++ {
+		fsm_free := int(fsm_data[pageNum-1])
+		if fsm_free >= empty_free {
+			continue
+		}
+
+		offsetBytes := int64((pageNum - 1) * PageSize)
+		page, err := tm.FileManager.Read(tableName+".table", offsetBytes, int64(PageSize))
+		if err != nil {
+			return nil, err
+		}
+
+		record_count := uint16(binary.LittleEndian.Uint16(page[0:2]))
+		offset := PageSize
+		recordID := int16(1)
+
+		for record_count > 0 {
+			record_offset := uint16(binary.LittleEndian.Uint16(page[offset-2 : offset]))
+			offset -= 2
+			record_length := uint16(binary.LittleEndian.Uint16(page[offset-2 : offset]))
+
+			rec := DeserializeRecord(schema, page[record_offset:record_offset+record_length], columnProjection)
+			if rec != nil {
+				locations = append(locations, RecordLocation{
+					PageID:   int64(pageNum),
+					RecordID: recordID,
+				})
+			}
+
+			offset -= 2
+			record_count--
+			recordID++
+		}
+	}
+
+	return locations, nil
 }
