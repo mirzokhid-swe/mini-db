@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 )
 
 type ColumnType int
@@ -76,6 +77,8 @@ type Item struct {
 
 type TableManager struct {
 	FileManager *FileManager
+	tableLocks  map[string]*sync.RWMutex
+	locksMu     sync.Mutex
 }
 
 type IndexI interface {
@@ -131,7 +134,22 @@ func NewTableManager(dataDir string) (*TableManager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &TableManager{FileManager: fileManager}, nil
+	return &TableManager{
+		FileManager: fileManager,
+		tableLocks:  make(map[string]*sync.RWMutex),
+	}, nil
+}
+
+func (tm *TableManager) getTableLock(tableName string) *sync.RWMutex {
+	tm.locksMu.Lock()
+	defer tm.locksMu.Unlock()
+
+	if lock, ok := tm.tableLocks[tableName]; ok {
+		return lock
+	}
+	lock := &sync.RWMutex{}
+	tm.tableLocks[tableName] = lock
+	return lock
 }
 
 func (tm *TableManager) CreateTable(name string, schema *Schema) error {
@@ -206,6 +224,9 @@ func (tm *TableManager) GetTableSchema(schemaName string) (schema Schema, err er
 }
 
 func (tm *TableManager) Insert(tableName string, record Record) error {
+	lock := tm.getTableLock(tableName)
+	lock.Lock()
+	defer lock.Unlock()
 
 	schema, err := tm.GetTableSchema(tableName + ".schema")
 
@@ -257,6 +278,10 @@ func (tm *TableManager) Insert(tableName string, record Record) error {
 }
 
 func (tm *TableManager) GetAllData(tableName string, filters []Filter, selectedColumns SelectedColumns) ([]map[string]any, error) {
+	lock := tm.getTableLock(tableName)
+	lock.RLock()
+	defer lock.RUnlock()
+
 	schema, err := tm.GetTableSchema(tableName + ".schema")
 	if err != nil {
 		return nil, err
@@ -605,6 +630,10 @@ func (tm *TableManager) getRecordLocationsFromIndexedFilters(tableName string, f
 }
 
 func (tm *TableManager) Delete(tableName string, filters []Filter) (int, error) {
+	lock := tm.getTableLock(tableName)
+	lock.Lock()
+	defer lock.Unlock()
+
 	schema, err := tm.GetTableSchema(tableName + ".schema")
 	if err != nil {
 		return 0, err
@@ -662,6 +691,10 @@ func (tm *TableManager) markRecordAsDeleted(tableName string, location RecordLoc
 }
 
 func (tm *TableManager) Update(tableName string, updatedFields map[string]any, filters []Filter) (int, error) {
+	lock := tm.getTableLock(tableName)
+	lock.Lock()
+	defer lock.Unlock()
+
 	if len(updatedFields) == 0 {
 		return 0, errors.New("updatedFields cannot be empty")
 	}

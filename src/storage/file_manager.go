@@ -5,11 +5,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 type FileManager struct {
 	root  string
 	files map[string]*os.File
+	mu    sync.RWMutex
 }
 
 func NewFileManager(root string) (*FileManager, error) {
@@ -44,6 +46,8 @@ func NewFileManager(root string) (*FileManager, error) {
 }
 
 func (fm *FileManager) Write(fileName string, offset int64, data []byte) error {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
 
 	file := fm.files[fileName]
 
@@ -57,6 +61,9 @@ func (fm *FileManager) Write(fileName string, offset int64, data []byte) error {
 }
 
 func (fm *FileManager) Read(fileName string, offset int64, size int64) ([]byte, error) {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+
 	data := make([]byte, size)
 	file := fm.files[fileName]
 	n, err := file.ReadAt(data, offset)
@@ -67,6 +74,8 @@ func (fm *FileManager) Read(fileName string, offset int64, size int64) ([]byte, 
 }
 
 func (fm *FileManager) ReadAll(fileName string) ([]byte, error) {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
 
 	file := fm.files[fileName]
 
@@ -78,12 +87,17 @@ func (fm *FileManager) ReadAll(fileName string) ([]byte, error) {
 }
 
 func (fm *FileManager) FileExists(name string) bool {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
 
 	_, ok := fm.files[name]
 	return ok
 }
 
 func (fm *FileManager) CreateFile(name string) (*os.File, error) {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+
 	full := filepath.Join(fm.root, name)
 	file, err := os.Create(full)
 	if err != nil {
@@ -102,9 +116,12 @@ func (fm *FileManager) OpenFile(name string) (*os.File, error) {
 }
 
 func (fm *FileManager) GetFileSize(fileName string) (int64, error) {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+
 	file := fm.files[fileName]
 
-	if !fm.FileExists(fileName) {
+	if file == nil {
 		return 0, errors.New("file does not exist")
 	}
 
