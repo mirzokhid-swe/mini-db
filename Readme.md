@@ -46,7 +46,7 @@ go run cmd/cli/main.go
 RDBMS CLI v1.0
 Type 'exit' to quit, 'help' for commands
 
-rdbms> CREATE TABLE users (id INT INDEX, name VARCHAR(50), age INT);
+rdbms> CREATE TABLE users (id INT, name VARCHAR(50), age INT);
 Table 'users' created
 
 rdbms> INSERT INTO users (id, name, age) VALUES (1, 'John', 25);
@@ -131,7 +131,7 @@ Each table stores data in 8KB pages. A page contains:
 
 **B-Tree Indexing**
 
-When you create a column with `INDEX`, the system creates a B-Tree index file. On INSERT, the value is added to the B-Tree with a pointer to the record location (page ID + record ID). SELECT queries with WHERE on indexed columns use the B-Tree for O(log n) lookups instead of full table scans.
+Indexes are created via the REST API by setting `is_indexed: true` on INT columns during table creation. On INSERT, the value is added to the B-Tree with a pointer to the record location (page ID + record ID). SELECT queries with WHERE on indexed columns use the B-Tree for O(log n) lookups instead of full table scans.
 
 **File Structure**
 
