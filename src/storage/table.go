@@ -23,12 +23,6 @@ type FilterOperator string
 const (
 	OpEq FilterOperator = "="
 	OpNe FilterOperator = "!="
-	// OpLt FilterOperator = "<"
-	// OpLe FilterOperator = "<="
-	// OpGt FilterOperator = ">"
-	// OpGe FilterOperator = ">="
-	// OpIn   FilterOperator = "IN"
-	// OpLike FilterOperator = "LIKE"
 )
 
 type Column struct {
@@ -228,6 +222,10 @@ func (tm *TableManager) Insert(tableName string, record Record) error {
 	lock.Lock()
 	defer lock.Unlock()
 
+	return tm.insertInternal(tableName, record)
+}
+
+func (tm *TableManager) insertInternal(tableName string, record Record) error {
 	schema, err := tm.GetTableSchema(tableName + ".schema")
 
 	if err != nil {
@@ -772,7 +770,7 @@ func (tm *TableManager) Update(tableName string, updatedFields map[string]any, f
 
 	updatedCount := 0
 	for _, record := range updatedRecords {
-		err := tm.Insert(tableName, record)
+		err := tm.insertInternal(tableName, record)
 		if err != nil {
 			fmt.Printf("Error inserting updated record: %v\n", err)
 			continue
