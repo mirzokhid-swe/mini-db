@@ -350,8 +350,8 @@ func DeserializeIndexNode(data []byte) Node {
 	node.NodeType = NodeType(data[offset])
 	offset++
 
-	node.KeyCount = int8(data[offset])
-	offset++
+	node.KeyCount = int16(binary.LittleEndian.Uint16(data[offset : offset+2]))
+	offset += 2
 
 	if node.NodeType != NodeTypeLeaf && node.NodeType != NodeTypeRootLeaf {
 		childCount := int(node.KeyCount) + 1

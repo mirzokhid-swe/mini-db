@@ -15,7 +15,7 @@ const (
 )
 
 const (
-	MaxKeys              = 5
+	MaxKeys              = 340
 	NodeSize             = 8192 // 8KB
 	IndexHeaderSize      = 32
 	RecordListHeaderSize = 16 // FreeSpacePointer(8) + BlockCount(8)
@@ -44,7 +44,7 @@ type Node struct {
 	Values        []ValueEntry
 	ChildPointers []uint64
 	NodeType      NodeType
-	KeyCount      int8
+	KeyCount      int16
 	Address       int64
 	ParentAddress int64
 }
@@ -317,7 +317,7 @@ func (tm *TableManager) SplitLeafNode(fullNode Node, parentNode Node, header Ind
 
 	rightNode := Node{
 		NodeType:      NodeTypeLeaf,
-		KeyCount:      int8(len(fullNode.Values) - middle - 1),
+		KeyCount:      int16(len(fullNode.Values) - middle - 1),
 		Values:        fullNode.Values[middle+1:],
 		Address:       int64(header.FreeSpacePointer),
 		ParentAddress: fullNode.ParentAddress,
@@ -325,7 +325,7 @@ func (tm *TableManager) SplitLeafNode(fullNode Node, parentNode Node, header Ind
 
 	leftNode := fullNode
 	leftNode.Values = leftNode.Values[:middle]
-	leftNode.KeyCount = int8(middle)
+	leftNode.KeyCount = int16(middle)
 
 	middleValue := fullNode.Values[middle]
 
@@ -440,7 +440,7 @@ func (tm *TableManager) SplitExternalNode(fullNode Node, parentNode Node, header
 
 	rightNode := Node{
 		NodeType:      NodeTypeInternal,
-		KeyCount:      int8(len(fullNode.Values) - middle - 1),
+		KeyCount:      int16(len(fullNode.Values) - middle - 1),
 		Values:        fullNode.Values[middle+1:],
 		ChildPointers: fullNode.ChildPointers[middle+1:],
 		Address:       int64(header.FreeSpacePointer),
@@ -450,7 +450,7 @@ func (tm *TableManager) SplitExternalNode(fullNode Node, parentNode Node, header
 	leftNode := fullNode
 	leftNode.Values = leftNode.Values[:middle]
 	leftNode.ChildPointers = leftNode.ChildPointers[:middle+1]
-	leftNode.KeyCount = int8(middle)
+	leftNode.KeyCount = int16(middle)
 
 	leftNodeBinary := SerializeIndexNode(leftNode)
 	if err := tm.FileManager.Write(indexName, leftNode.Address, padTo8KB(leftNodeBinary)); err != nil {
@@ -519,7 +519,7 @@ func (tm *TableManager) splitRoot(root Node, header IndexHeader, indexName strin
 
 	leftChild := Node{
 		NodeType:      NodeTypeInternal,
-		KeyCount:      int8(middle),
+		KeyCount:      int16(middle),
 		Values:        root.Values[:middle],
 		ChildPointers: root.ChildPointers[:middle+1],
 		Address:       int64(header.FreeSpacePointer),
@@ -527,7 +527,7 @@ func (tm *TableManager) splitRoot(root Node, header IndexHeader, indexName strin
 
 	rightChild := Node{
 		NodeType:      NodeTypeInternal,
-		KeyCount:      int8(len(root.Values) - middle - 1),
+		KeyCount:      int16(len(root.Values) - middle - 1),
 		Values:        root.Values[middle+1:],
 		ChildPointers: root.ChildPointers[middle+1:],
 		Address:       int64(header.FreeSpacePointer) + NodeSize,
