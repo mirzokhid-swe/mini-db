@@ -155,7 +155,7 @@ func (tm *TableManager) InsertNodeToWithoutChildRoot(node Node, value int64, loc
 
 	node.KeyCount++
 
-	if node.KeyCount > 5 {
+	if node.KeyCount > MaxKeys {
 		nodeBinaries := tm.SplitRootNode(node, int64(header.FreeSpacePointer))
 
 		if err := tm.FileManager.Write(indexName, int64(header.FreeSpacePointer), nodeBinaries[0]); err != nil {
@@ -248,8 +248,13 @@ func (tm *TableManager) insertToLeafNode(currentNode Node, value int64, location
 
 	currentNode.KeyCount++
 
-	if currentNode.KeyCount > 5 {
-		_, _, err := tm.SplitLeafNode(currentNode, currentNode, header, indexName)
+	if currentNode.KeyCount > MaxKeys {
+		parentNode, err := tm.GetNode(indexName, currentNode.ParentAddress)
+		if err != nil {
+			return fmt.Errorf("failed to get parent node: %v", err)
+		}
+
+		_, _, err = tm.SplitLeafNode(currentNode, parentNode, header, indexName)
 		return err
 	} else {
 		node_binary := SerializeIndexNode(currentNode)
