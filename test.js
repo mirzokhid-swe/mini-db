@@ -2,7 +2,7 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 
 export const options = {
-  vus: 2,
+  vus: 20,
   duration: '30s',
 };
 
@@ -42,13 +42,14 @@ export default function () {
   };
 
   const id = Math.floor(Math.random() * 1000000);
+  const age = Math.floor(Math.random() * 80) + 18;
 
   const insertPayload = JSON.stringify({
     name: TABLE_NAME,
     values: {
       id: id,
       name: `User_${id}`,
-      age: Math.floor(Math.random() * 80) + 18,
+      age: age,
       birth_date: '2000-01-15',
       created_at: '2026-01-15T17:15:00Z',
       score: Math.random() * 100,
@@ -64,6 +65,29 @@ export default function () {
   });
 
   http.post(`${BASE_URL}/api/v1/records/query`, queryPayload, params);
+
+  const updatePayload = JSON.stringify({
+    name: TABLE_NAME,
+    values: {
+      name: `UpdatedUser_${id}`,
+    },
+    filter: [
+      { column: 'id', operator: '=', value: id },
+    ],
+  });
+
+  http.post(`${BASE_URL}/api/v1/records/update`, updatePayload, params);
+
+  if (Math.random() < 0.3) {
+    const deletePayload = JSON.stringify({
+      name: TABLE_NAME,
+      filter: [
+        { column: 'id', operator: '=', value: id },
+      ],
+    });
+
+    http.post(`${BASE_URL}/api/v1/records/delete`, deletePayload, params);
+  }
 
   sleep(1);
 }
