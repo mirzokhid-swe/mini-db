@@ -31,7 +31,7 @@ This project was built as a learning exercise. The following components were dev
 ### Installation
 
 ```bash
-git clone git@github.com:mirzokhidbro/mini-db.git
+git clone git@github.com:mirzokhid-swe/mini-db.git
 cd mini-db
 go mod download
 ```
